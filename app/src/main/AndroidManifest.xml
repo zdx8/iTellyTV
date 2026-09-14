@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- iTellyTV — IPTV player for Android TV 13 -->
+
+    <!-- Required: this is a TV app, must declare leanback feature -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="true" />
+
+    <!-- TVs have no touchscreen; don't require it -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <!-- Network: streaming obviously needs internet -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- For wake-up of network during streaming -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Media library: local video files. API 33 uses scoped media. -->
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_VIDEO"
+        tools:ignore="SelectedPhotoAccess" />
+
+    <application
+        android:name=".iTellyApp"
+        android:allowBackup="true"
+        android:banner="@drawable/app_banner"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.iTellyTV"
+        android:usesCleartextTraffic="true">
+
+        <!-- Required for ExoPlayer RTSP/UDP from arbitrary sources -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:launchMode="singleTask">
+            <!--
+                Two intent filters:
+
+                1. LEANBACK_LAUNCHER — the standard filter for TV
+                   launchers. Required to appear in the "Apps" row of
+                   the Android TV home screen.
+
+                2. LAUNCHER (default) — needed for hybrid boxes
+                   (Mi TV Stick, many Chinese OEM Android TV sticks)
+                   that don't fully implement the Leanback launcher.
+                   Without this, the app installs successfully but
+                   the installer's "Open" button is greyed out and
+                   "My Apps" doesn't show the icon.
+
+                Both filters reference the same MAIN activity, so
+                the manifest merger is happy and the activity is
+                exported once.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Fullscreen playback -->
+        <activity
+            android:name=".player.PlaybackActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:theme="@style/Theme.iTellyTV.Playback" />
+
+    </application>
+
+</manifest>

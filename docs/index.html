@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="iTellyTV — Android TV 13+ IPTV / 媒体播放器，Apache 2.0 开源，约 11 MB APK。设计继承自 iTelly-macOS。">
+  <title>iTellyTV · Android TV IPTV 播放器</title>
+  <link rel="icon" href="assets/icon.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <div class="container">
+
+    <!-- ====================== HERO ====================== -->
+    <header class="hero">
+      <img class="logo" src="assets/icon.png" alt="iTellyTV logo">
+      <div>
+        <h1>iTellyTV</h1>
+        <p class="tagline">Android TV 上的 IPTV / 媒体播放器。打开即看，不上传任何数据。</p>
+        <div class="badges">
+          <span class="badge">Android TV 13+</span>
+          <span class="badge">API 23+</span>
+          <span class="badge">~11 MB APK</span>
+          <span class="badge">Apache 2.0</span>
+          <span class="badge">Media3 / ExoPlayer</span>
+        </div>
+        <a class="cta" href="https://github.com/zdx8/iTellyTV/releases/latest">下载最新版本</a>
+        <a class="cta-secondary" href="https://github.com/zdx8/iTellyTV">查看源码</a>
+      </div>
+    </header>
+
+    <!-- ====================== 对比 ====================== -->
+    <section>
+      <h2>和 macOS 版的区别</h2>
+      <p>iTellyTV 继承了 <a href="https://github.com/zdx8/iTelly-macOS">iTelly-macOS</a> 的设计、错误恢复、协议支持，但用 Media3 / ExoPlayer 替代了 libVLC 内核——</p>
+      <div class="compare">
+        <div>
+          <div class="label">项目</div>
+          <div class="row-name">iTelly-macOS</div>
+          <div class="row-name">iTellyTV（本项目）</div>
+        </div>
+        <div>
+          <div class="label">平台</div>
+          <div class="row-them">macOS 14+ (arm64)</div>
+          <div class="row-us"><strong>Android TV 13 / 14 / 15 / 16</strong></div>
+        </div>
+        <div>
+          <div class="label">播放内核</div>
+          <div class="row-them">libVLC（GPLv2+）</div>
+          <div class="row-us"><strong>Media3 / ExoPlayer（Apache 2.0）</strong></div>
+        </div>
+        <div>
+          <div class="label">APK 大小</div>
+          <div class="row-them">~81 MB</div>
+          <div class="row-us"><strong>~11 MB</strong></div>
+        </div>
+        <div>
+          <div class="label">许可证</div>
+          <div class="row-them">GPL-2.0-or-later</div>
+          <div class="row-us"><strong>Apache 2.0</strong></div>
+        </div>
+        <div>
+          <div class="label">协议</div>
+          <div class="row-them">HLS, RTSP, RTMP, UDP, HTTP, FTP, MMS</div>
+          <div class="row-us"><strong>HLS, RTSP, RTMP, UDP, HTTP（少 FTP / MMS）</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================== 功能 ====================== -->
+    <section>
+      <h2>功能</h2>
+      <div class="feature-grid">
+        <div class="feature">
+          <h3>订阅 + 频道列表</h3>
+          <p>远程 m3u / m3u8 订阅、本地文件导入、单条流直连。CCTV 在前、湖系优先的自然排序。</p>
+        </div>
+        <div class="feature">
+          <h3>播放器全屏</h3>
+          <p>SurfaceView 长期存活、永不替换。切频道只换 MediaItem，0 ms 重建延迟。</p>
+        </div>
+        <div class="feature">
+          <h3>错误恢复</h3>
+          <p>1s/2s/4s 退避重连，最多 3 次。15s 无进度看门狗。连续失败自动跳下一频道；全部失败显示"服务器挂了"。</p>
+        </div>
+        <div class="feature">
+          <h3>D-pad 完整适配</h3>
+          <p>↑/↓ 切台，← 召唤频道列表抽屉，OK 选台，Back 二级返回，数字键直接跳 N 号频道。</p>
+        </div>
+        <div class="feature">
+          <h3>收藏 / 长按菜单</h3>
+          <p>长按 OK 在某频道：加入收藏 / 取消收藏。★ 标记左侧出现。</p>
+        </div>
+        <div class="feature">
+          <h3>Room + Flow 数据层</h3>
+          <p>Activity 重建不丢数据。Flow 自动响应数据库变化。70 个 unit test 覆盖核心逻辑。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================== 安装 ====================== -->
+    <section>
+      <h2>安装</h2>
+      <p>到 <a href="https://github.com/zdx8/iTellyTV/releases/latest">Releases</a> 下载最新的 <code>iTellyTV-vX.Y.Z-debug.apk</code>，用 adb 装到 Android TV：</p>
+      <pre><code>adb install -r iTellyTV-v1.0.0-debug.apk
+adb shell am start -n com.example.itellytv/.ui.MainActivity</code></pre>
+      <p>首次启动会提示"是否允许安装未知应用"——去 <strong>设置 → 安全 → 允许此来源</strong>。</p>
+      <h2 style="margin-top: 32px">订阅源</h2>
+      <p>iTellyTV 默认加载您 home 网络上的 IPTV 订阅：</p>
+      <pre><code>http://10.0.0.51:1905/interface.m3u?profile=keren</code></pre>
+      <p>想换订阅？长按主页右上角的 <strong>⟳ Reload</strong> 按钮 → 输入新的 m3u URL → Load。</p>
+    </section>
+
+    <!-- ====================== 键位 ====================== -->
+    <section>
+      <h2>键位（D-pad）</h2>
+      <div class="keymap">
+        <div><span class="k">OK / 中心</span></div>
+        <div><span class="d">抽屋关 → 播放/暂停；抽屋开 → 选台（高亮 → 切到该频道）</span></div>
+
+        <div><span class="k">← (LEFT)</span></div>
+        <div><span class="d">召唤 / 收 抽屋</span></div>
+
+        <div><span class="k">↑ (UP)</span></div>
+        <div><span class="d">抽屋关 → 切上一频道；抽屋开 → 抽屉里移高亮（视频不变）</span></div>
+
+        <div><span class="k">↓ (DOWN) / → (RIGHT)</span></div>
+        <div><span class="d">抽屋关 → 切下一频道；抽屋开 → 抽屉里移高亮（视频不变）</span></div>
+
+        <div><span class="k">Back</span></div>
+        <div><span class="d">抽屋关 → 退出 app；抽屋开 → 收抽屋（再按退出）</span></div>
+
+        <div><span class="k">数字 0-9</span></div>
+        <div><span class="d">跳到第 N 个频道（1-2-3 → 第 123 个）</span></div>
+
+        <div><span class="k">MEDIA_REWIND / FFW</span></div>
+        <div><span class="d">±10 秒（VOD 有效）</span></div>
+      </div>
+    </section>
+
+    <!-- ====================== 架构 ====================== -->
+    <section>
+      <h2>架构亮点（继承自 macOS）</h2>
+      <p>iTelly-macOS README 列了"5 个值得记录的实现要点"——iTellyTV 全部继承：</p>
+      <ol>
+        <li><strong>DataSource 工厂包装</strong>：<code>DefaultHttpDataSource.Factory</code> 在 <code>ExoPlayer.Builder().build()</code> 之前一次性建好（含 #EXTVLCOPT headers + 超时 + User-Agent）。</li>
+        <li><strong>重连退避 + 上限</strong>：1s/2s/4s，最多 3 次——修复 macOS "自动重连永不停"那个 bug。</li>
+        <li><strong>音量范围一致</strong>：Media3 <code>volume</code> 0.0f-1.0f，避免 macOS 的"一处用 0-1、另一处用 0-100"陷阱。</li>
+        <li><strong>渲染视图长期存活</strong>：视频 SurfaceView 永不替换（macOS 的 <code>VLCCAOpenGLLayer</code> 教训）。</li>
+        <li><strong>LoadControl 设完再 build</strong>：LiveConfig / BufferDurations 在 Builder 之前全部设好。</li>
+      </ol>
+    </section>
+
+    <!-- ====================== 兼容性 ====================== -->
+    <section>
+      <h2>兼容性</h2>
+      <p><strong>已验证：</strong>Android TV 13 (API 33) 设计目标。<br>
+         <strong>支持：</strong>Android TV 14 / 15 / 16 (API 34-36)。Android 15+ 的 edge-to-edge 已在 <code>EdgeToEdgeInsets</code> 处理。</p>
+      <p>测试覆盖 70 个 unit test：M3U 解析、自然排序、播放器调参、退避算法、抽屉选中状态、错误分类。</p>
+    </section>
+
+    <!-- ====================== 链接 ====================== -->
+    <section>
+      <h2>链接</h2>
+      <ul>
+        <li><a href="https://github.com/zdx8/iTellyTV">GitHub 仓库（含源码、CI、Release）</a></li>
+        <li><a href="https://github.com/zdx8/iTelly-macOS">iTelly-macOS（macOS 原项目）</a></li>
+        <li><a href="https://github.com/androidx/media">AndroidX Media3 / ExoPlayer（播放引擎）</a></li>
+        <li><a href="https://github.com/zdx8/iTellyTV/blob/main/LICENSE">Apache 2.0 许可证</a></li>
+      </ul>
+      <p style="color: var(--fg-muted); font-size: 14px; margin-top: 32px;">
+        © 2025 zdx8 · Licensed under Apache 2.0<br>
+        <a href="https://github.com/zdx8/iTellyTV">github.com/zdx8/iTellyTV</a>
+      </p>
+    </section>
+
+  </div>
+
+</body>
+</html>

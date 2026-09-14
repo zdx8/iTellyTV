@@ -1,0 +1,36 @@
+# --- Gradle ---
+.gradle/
+build/
+local.properties
+.kotlin/
+captures/
+.cxx/
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*.tmp
+*~
+
+# --- Logs / crash dumps ---
+*.log
+*.hprof
+hs_err_pid*.log
+out.log
+err.log
+
+# --- Project-specific (don't commit) ---
+# Fake SDK with build-tools / platform-34 + build-tools 35
+fake-sdk/
+app/release/
+*.apk
+!docs/**/*.apk
+# keep sample assets staged under assets/ but ignore generated cache
+app/build/

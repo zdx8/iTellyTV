@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">i电视</string>
+    <string name="menu_play_now">▶  Play now</string>
+    <string name="menu_add_favorite">★  Add to favorites</string>
+    <string name="menu_remove_favorite">☆  Remove from favorites</string>
+</resources>
