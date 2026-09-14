@@ -75,6 +75,8 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Rename artifacts for clarity
+        env:
+          TAG: ${{ steps.get_version.outputs.TAG }}
         run: |
           mv app/build/outputs/apk/debug/app-debug.apk \
              "iTellyTV-${TAG}-debug.apk"
@@ -82,6 +84,8 @@ jobs:
              "iTellyTV-${TAG}-release-unsigned.apk"
 
       - name: Generate SHA-256 checksums
+        env:
+          TAG: ${{ steps.get_version.outputs.TAG }}
         run: |
           shasum -a 256 "iTellyTV-${TAG}-debug.apk" > "iTellyTV-${TAG}-debug.apk.sha256"
           shasum -a 256 "iTellyTV-${TAG}-release-unsigned.apk" > "iTellyTV-${TAG}-release-unsigned.apk.sha256"
