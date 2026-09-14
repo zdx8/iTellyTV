@@ -4,9 +4,8 @@ on:
   push:
     tags:
       - 'v*.*.*'    # matches v1.0.0, v1.2.3, v2.0.0-rc.1, etc.
-
-# Allow running from the Actions tab for manual ad-hoc releases.
-workflow_dispatch:
+  # Allow running from the Actions tab for manual ad-hoc releases.
+  workflow_dispatch:
 
 jobs:
   release:
@@ -64,7 +63,14 @@ jobs:
 
       - name: Determine version tag
         id: get_version
-        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            # workflow_dispatch runs from a branch — use the latest tag
+            TAG="$(git describe --tags --abbrev=0)"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Rename artifacts for clarity
         run: |
