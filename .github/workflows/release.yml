@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'    # matches v1.0.0, v1.2.3, v2.0.0-rc.1, etc.
+
+# Allow running from the Actions tab for manual ad-hoc releases.
+workflow_dispatch:
+
+jobs:
+  release:
+    name: Build signed release APK
+    runs-on: macos-latest
+    timeout-minutes: 25
+    # Only one release per tag — re-running for the same tag is a no-op
+    # (the `gh release create` call errors out if the tag already has
+    # a release, which is the correct behaviour).
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          build-tools-version: 35.0.0
+          arch: x86_64
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses
+
+      - name: Validate Gradle wrapper
+        uses: gradle/wrapper-validation-action@v3
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # Run unit tests first. If they fail we never produce an APK
+      # that has the regression.
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Build debug APK (for direct install)
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Build release APK (unsigned — for advanced users who
+            want to side-load with their own signing key)
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Determine version tag
+        id: get_version
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Rename artifacts for clarity
+        run: |
+          mv app/build/outputs/apk/debug/app-debug.apk \
+             "iTellyTV-${TAG}-debug.apk"
+          mv app/build/outputs/apk/release/app-release-unsigned.apk \
+             "iTellyTV-${TAG}-release-unsigned.apk"
+
+      - name: Generate SHA-256 checksums
+        run: |
+          shasum -a 256 "iTellyTV-${TAG}-debug.apk" > "iTellyTV-${TAG}-debug.apk.sha256"
+          shasum -a 256 "iTellyTV-${TAG}-release-unsigned.apk" > "iTellyTV-${TAG}-release-unsigned.apk.sha256"
+
+      - name: Create GitHub Release with APK attachments
+        uses: softprops/action-gh-release@v2
+        with:
+          # We create the release lazily — if one already exists
+          # for this tag, gh release handles the "already exists"
+          # case and we just attach the new files.
+          tag_name: ${{ steps.get_version.outputs.TAG }}
+          name: iTellyTV ${{ steps.get_version.outputs.TAG }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.get_version.outputs.TAG, '-') }}
+          files: |
+            iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk
+            iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk.sha256
+            iTellyTV-${{ steps.get_version.outputs.TAG }}-release-unsigned.apk
+            iTellyTV-${{ steps.get_version.outputs.TAG }}-release-unsigned.apk.sha256
+          body: |
+            ## iTellyTV ${{ steps.get_version.outputs.TAG }}
+
+            详见 [CHANGELOG / README](https://github.com/${{ github.repository }}#功能)。
+
+            ### 安装
+
+            ```
+            adb install -r iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk
+            ```
+
+            ### 附件
+
+            | 文件 | 用途 |
+            |------|------|
+            | `iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk` | debug build（可直接装） |
+            | `iTellyTV-${{ steps.get_version.outputs.TAG }}-release-unsigned.apk` | release build（**未签名**，需自行签名） |
+            | `*.sha256` | 校验和 |
+
+            > **关于签名**：本项目当前**未自带签名 keystore**。release APK 未签名，需您用 `apksigner` 自签或放到您自己的 CI 流程。debug APK 因为 debug keystore 在 Android SDK 内部所以**可直接安装**。
+
+            系统要求：Android TV 13+ (API 33+)，目标 Android TV 14 / 15 / 16。

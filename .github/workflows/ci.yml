@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -20,6 +21,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      # macos-latest runners do NOT include the Android SDK — we
+      # install it on demand. `accept-licenses` is essential or the
+      # `sdkmanager --licenses` step below hangs.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          build-tools-version: 35.0.0
+          arch: x86_64
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses
 
       - name: Validate Gradle wrapper
         uses: gradle/wrapper-validation-action@v3
