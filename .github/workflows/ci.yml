@@ -22,15 +22,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # macos-latest runners do NOT include the Android SDK — we
-      # install it on demand. `accept-licenses` is essential or the
-      # `sdkmanager --licenses` step below hangs.
+      # macos-latest runners do NOT include the Android SDK —
+      # install it on demand. We use `packages` instead of the
+      # unofficial `api-level` / `build-tools-version` inputs
+      # (those are not part of the action's schema and cause an
+      # "Unexpected input(s)" error).
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 35
-          build-tools-version: 35.0.0
-          arch: x86_64
+          packages: 'platforms;android-35 build-tools;35.0.0 platform-tools'
+
+      # setup-android accepts licenses by default; this is a
+      # belt-and-braces guard for older action versions.
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses
 
       - name: Accept SDK licenses
         run: yes | sdkmanager --licenses
