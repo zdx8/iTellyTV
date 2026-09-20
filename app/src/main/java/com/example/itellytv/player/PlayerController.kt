@@ -19,7 +19,6 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 
 /**
@@ -95,6 +94,43 @@ class PlayerController(
     private var errorReportedTerminal = false
 
     /**
+     * True once [prepare] has been called. We don't build the player
+     * there any more (see [ensurePlayer]) because the LoadControl has
+     * to be chosen from the *first* stream's live/VOD nature, and we
+     * don't know that until [play].
+     */
+    private var prepared = false
+
+    /**
+     * The live/VOD mode the current LoadControl was built for. When
+     * [play] switches between a live and a VOD stream we rebuild the
+     * player so the buffer tuning actually takes effect.
+     */
+    private var loadControlIsLive: Boolean? = null
+
+    /**
+     * The SurfaceView handed to [bindSurface]. Held until the player
+     * exists so we can attach the surface even though the Activity
+     * calls `bindSurface()` before the first `play()`.
+     */
+    private var pendingSurfaceView: SurfaceView? = null
+
+    /**
+     * The scheduled reconnect attempt, kept as a field so [stopWatchdogs]
+     * (and therefore [release] / [stop]) can cancel it. Without this a
+     * Back press during the backoff window would fire `play()` on a
+     * released controller and throw.
+     */
+    private val reconnectRunnable = Runnable {
+        val url = currentStreamUrl
+        if (url == null || player == null) {
+            Log.i(TAG, "Reconnect skipped — controller released or no stream")
+            return@Runnable
+        }
+        startPlayback(url, currentTitle, currentOptions)
+    }
+
+    /**
      * Per-channel options. Read by [ChannelAwareDataSourceFactory] on
      * every new playback so we can switch channels without rebuilding
      * the ExoPlayer. Mirrors how libVLC would apply
@@ -116,17 +152,36 @@ class PlayerController(
     // ============================================================
 
     /**
-     * Build the underlying ExoPlayer with the iTellyTV tuning baked in.
-     * MUST be called before any setSurfaceHolder / play call (same
-     * trap as the macOS `VLC_PLUGIN_PATH` timing).
+     * Mark the controller ready for use.
+     *
+     * We deliberately do **not** build the [ExoPlayer] here. The
+     * LoadControl (buffer durations, frame-drop policy) must be passed
+     * to `ExoPlayer.Builder` before `build()`, and the right values
+     * depend on whether the first stream is live or VOD — which we
+     * only learn in [play]. Building eagerly here meant the player was
+     * always constructed with the VOD profile, so the live tuning
+     * never took effect. The player is now built lazily in
+     * [ensurePlayer] with the correct profile.
      */
     fun prepare() {
+        prepared = true
+    }
+
+    /**
+     * Build (or rebuild) the underlying ExoPlayer for the given
+     * live/VOD profile. No-op when a player already exists with the
+     * same profile. Rebuilding happens when the user switches between
+     * a live channel and a VOD item, because LoadControl is immutable
+     * after `build()`.
+     */
+    private fun ensurePlayer(live: Boolean) {
+        if (player != null && loadControlIsLive == live) return
         if (player != null) {
-            Log.w(TAG, "prepare() called twice — releasing old player first")
+            Log.i(TAG, "Live mode changed ($loadControlIsLive -> $live) — rebuilding player")
             release()
         }
 
-        val loadControl = buildLoadControl()
+        val loadControl = buildLoadControl(live)
 
         // Wrap the DefaultHttpDataSource.Factory so the user-agent,
         // referer, and proxy headers injected by the channel's
@@ -143,12 +198,7 @@ class PlayerController(
         val mediaSourceFactory = DefaultMediaSourceFactory(context)
             .setDataSourceFactory(httpFactory)
 
-        val trackSelector = DefaultTrackSelector(context).apply {
-            // Disable track selection of unsupported codecs early — saves
-            // a "black screen" on TVs that have hw decoders for some
-            // codecs only.
-            setParameters(buildUponParameters().setForceLowestBitrate(false))
-        }
+        val trackSelector = DefaultTrackSelector(context)
 
         val exo = ExoPlayer.Builder(context)
             .setLoadControl(loadControl)
@@ -160,6 +210,15 @@ class PlayerController(
                 p.playWhenReady = playWhenReadyCached
             }
         player = exo
+        loadControlIsLive = live
+
+        // Attach the surface the Activity handed us before the player
+        // existed.
+        pendingSurfaceView?.let { view ->
+            if (view.holder.surface.isValid) {
+                exo.setVideoSurfaceHolder(view.holder)
+            }
+        }
     }
 
     /**
@@ -177,33 +236,55 @@ class PlayerController(
      * `VLCCAOpenGLLayer` cannot be re-parented mid-flight.
      */
     fun bindSurface(view: SurfaceView) {
-        check(player != null) { "bindSurface() called before prepare()" }
+        pendingSurfaceView = view
         view.holder.addCallback(surfaceCallback)
-        // If the surface is already created (typical on resume), wire
-        // it immediately.
-        if (view.holder.surface.isValid) {
-            player?.setVideoSurfaceHolder(view.holder)
+        // If the player already exists and the surface is live (typical
+        // when the player was rebuilt), wire it straight away.
+        val p = player
+        if (p != null && view.holder.surface.isValid) {
+            p.setVideoSurfaceHolder(view.holder)
         }
     }
 
     /**
-     * Start (or restart) playback of [streamUrl]. Live streams get the
-     * tuned LoadControl (1.5s buffer, frame drop); VOD uses the
-     * conservative defaults.
+     * Start (or restart) playback of [streamUrl] from a user action.
+     * Resets the reconnect counter — a fresh channel deserves a fresh
+     * budget.
      *
-     * The [options] parameter carries per-channel M3U options
-     * (#EXTVLCOPT / #KODIPROP) decoded into a typed form. ExoPlayer
-     * is rebuilt only when the options actually change since the last
-     * play call, to avoid unnecessary teardown.
+     * Note: [scheduleReconnect] must **not** go through here, or the
+     * counter would be cleared on every retry and the backoff would
+     * never escalate nor terminate (the macOS defect this port is
+     * supposed to have fixed). It calls [startPlayback] directly.
      */
     fun play(streamUrl: String, title: String? = null, options: ChannelOptions = ChannelOptions.empty()) {
-        check(player != null) { "play() called before prepare()" }
+        reconnectAttempt = 0
+        errorReportedTerminal = false
+        startPlayback(streamUrl, title, options)
+    }
+
+    /**
+     * The actual playback start, without touching the reconnect
+     * counter. Live streams get the tuned LoadControl (1.5s buffer,
+     * frame drop); VOD uses the conservative defaults.
+     */
+    private fun startPlayback(
+        streamUrl: String,
+        title: String?,
+        options: ChannelOptions
+    ) {
+        if (!prepared) {
+            Log.w(TAG, "startPlayback() called before prepare() — ignoring")
+            return
+        }
         currentStreamUrl = streamUrl
         currentTitle = title
         currentOptions = options
-        reconnectAttempt = 0
-        errorReportedTerminal = false
         isLive = guessLiveFromUrl(streamUrl)
+
+        // Build/rebuild with the correct buffer profile now that we
+        // know whether this is a live or VOD stream.
+        ensurePlayer(isLive)
+
         val item = MediaItem.Builder()
             .setUri(Uri.parse(streamUrl))
             .setLiveConfiguration(
@@ -247,15 +328,18 @@ class PlayerController(
 
     fun stop() {
         stopWatchdogs()
+        currentStreamUrl = null
         player?.stop()
         player?.clearMediaItems()
     }
 
     fun release() {
         stopWatchdogs()
+        currentStreamUrl = null
         player?.removeListener(playerListener)
         player?.release()
         player = null
+        loadControlIsLive = null
     }
 
     fun isPlaying(): Boolean = player?.isPlaying == true
@@ -278,7 +362,7 @@ class PlayerController(
     // Tunables
     // ============================================================
 
-    private fun buildLoadControl(): LoadControl {
+    private fun buildLoadControl(live: Boolean): LoadControl {
         // 1.5s min buffer for live, drop frames on underrun. These match
         // iTelly-macOS's "live tuning" section. VOD keeps default 4s so
         // seeks stay snappy.
@@ -295,17 +379,21 @@ class PlayerController(
         //                              before resuming. Live needs a bigger
         //                              cushion (1s) so we don't immediately
         //                              underrun again.
+        //
+        // `live` is a parameter (not the `isLive` field) so the value
+        // is unambiguous at the call site — this is what the old
+        // eager-build code got wrong.
         return DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs         = */ if (isLive) PlayerConfig.LIVE_MIN_BUFFER_MS.toInt()          else PlayerConfig.VOD_MIN_BUFFER_MS.toInt(),
-                /* maxBufferMs         = */ if (isLive) PlayerConfig.LIVE_MAX_BUFFER_MS.toInt()          else PlayerConfig.VOD_MAX_BUFFER_MS.toInt(),
-                /* bufferForPlaybackMs = */ if (isLive) PlayerConfig.LIVE_BUFFER_FOR_PLAYBACK_MS.toInt() else PlayerConfig.VOD_BUFFER_FOR_PLAYBACK_MS.toInt(),
-                /* bufferForRebufferMs  = */ if (isLive) PlayerConfig.LIVE_BUFFER_FOR_REBUFFER_MS.toInt()  else PlayerConfig.VOD_BUFFER_FOR_REBUFFER_MS.toInt()
+                /* minBufferMs         = */ if (live) PlayerConfig.LIVE_MIN_BUFFER_MS.toInt()          else PlayerConfig.VOD_MIN_BUFFER_MS.toInt(),
+                /* maxBufferMs         = */ if (live) PlayerConfig.LIVE_MAX_BUFFER_MS.toInt()          else PlayerConfig.VOD_MAX_BUFFER_MS.toInt(),
+                /* bufferForPlaybackMs = */ if (live) PlayerConfig.LIVE_BUFFER_FOR_PLAYBACK_MS.toInt() else PlayerConfig.VOD_BUFFER_FOR_PLAYBACK_MS.toInt(),
+                /* bufferForRebufferMs  = */ if (live) PlayerConfig.LIVE_BUFFER_FOR_REBUFFER_MS.toInt()  else PlayerConfig.VOD_BUFFER_FOR_REBUFFER_MS.toInt()
             )
             // Don't back off the clock when we underrun — prefer dropping
-            // frames over pausing (live sports / news). The "ifLive" guard
-            // keeps VOD behavior conservative.
-            .setPrioritizeTimeOverSizeThresholds(!isLive)
+            // frames over pausing (live sports / news). VOD stays
+            // conservative.
+            .setPrioritizeTimeOverSizeThresholds(!live)
             .build()
     }
 
@@ -323,6 +411,10 @@ class PlayerController(
 
     private fun stopWatchdogs() {
         mainHandler.removeCallbacks(progressTicker)
+        // Also drop any pending reconnect. Without this a Back press
+        // during the backoff window would run the reconnect against a
+        // released controller.
+        mainHandler.removeCallbacks(reconnectRunnable)
         isStallWatchdogArmed = false
     }
 
@@ -387,9 +479,10 @@ class PlayerController(
         reconnectAttempt += 1
         Log.i(TAG, "Reconnect attempt $reconnectAttempt/$maxReconnectAttempts in ${delay}ms (reason=$reason)")
         callbacks.onPlaybackStateChanged(PlaybackState.RECONNECTING)
-        mainHandler.postDelayed({
-            currentStreamUrl?.let { play(it, currentTitle) }
-        }, delay)
+        // Reconnect via [startPlayback] — NOT [play] — so the attempt
+        // counter survives and the backoff actually escalates.
+        mainHandler.removeCallbacks(reconnectRunnable)
+        mainHandler.postDelayed(reconnectRunnable, delay)
     }
 
     // ============================================================
@@ -431,8 +524,14 @@ class PlayerController(
             // Reset the stall baseline on each state transition; in
             // particular, STATE_READY means we have frames flowing
             // again so the previous baseline is stale.
+            //
+            // Must use the SAME clock as tickProgress() — mixing
+            // currentTimeMillis (epoch, ~1.7e12) with elapsedRealtime
+            // (since boot, ~1.2e6) made `stalledFor` hugely negative,
+            // so the stall watchdog could never fire after the first
+            // state transition.
             lastPositionForWatchdogMs = positionMs()
-            lastPositionChangeAt = System.currentTimeMillis()
+            lastPositionChangeAt = SystemClock.elapsedRealtime()
             isStallWatchdogArmed = (state == Player.STATE_READY)
             callbacks.onPlaybackStateChanged(mapped)
         }

@@ -1,42 +1,41 @@
 package com.example.itellytv.player
 
 import android.app.PendingIntent
-import android.app.Service
-import android.content.Intent
-import android.os.Build
-import android.os.IBinder
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.example.itellytv.R
 
 /**
- * PlaybackService — a [MediaSessionService] that owns the [ExoPlayer]
+ * PlaybackService — a [MediaSessionService] that owns an [ExoPlayer]
  * and exposes it to the system as a MediaSession.
  *
- * Why we need this: on Android TV the system wants to know which
- * app is currently playing audio so it can show media controls on the
- * lock screen, in Quick Settings, and in the TV's media notifications.
- * Without a MediaSession the user can't pause playback from the TV's
- * remote after the app goes into the background.
+ * Why we need this: on Android TV the system wants to know which app is
+ * currently playing audio so it can show media controls in Quick
+ * Settings and in the TV's media notifications, and so the remote's
+ * play/pause keys keep working while the activity is backgrounded.
  *
  * Lifecycle:
  *   - onCreate()      builds the ExoPlayer + MediaSession
- *   - onGetSession()  called by Media3 framework when an external
- *                      controller (system UI, Wear, Auto) wants a
- *                      session handle
+ *   - onGetSession()  called by the Media3 framework when an external
+ *                     controller (system UI, Wear, Auto) wants a handle
  *   - onDestroy()     releases the player
  *
- * Note: the MainActivity and PlaybackActivity we have today own
- * their own ExoPlayer instances via [PlayerController]. To wire this
- * service in we'd refactor so playback lives in the service. That is
- * tracked as a follow-up — for 1.1.0 we just provide the service
- * and the manifest entry, so the system can find us.
+ * Note: MainActivity and PlaybackActivity currently own their own
+ * ExoPlayer instances via [PlayerController]. Fully moving playback into
+ * this service is tracked as a follow-up; for now the service exists so
+ * the system can find us and so the manifest entry is justified.
+ *
+ * `@UnstableApi`: `DefaultMediaNotificationProvider` — the provider that
+ * creates the notification channel and paints the media notification —
+ * is still marked unstable by Media3. Any code touching it has to opt in
+ * explicitly; there is no stable replacement yet.
  */
+@androidx.media3.common.util.UnstableApi
 class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
@@ -44,6 +43,22 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+
+        // Give Media3 a notification provider we control. Two reasons:
+        //
+        //  1. DefaultMediaNotificationProvider creates the notification
+        //     channel itself (DEFAULT_CHANNEL_ID), which fixes the
+        //     "no channel with id itellytv_playback" crash we used to
+        //     get from posting to a channel nobody had registered.
+        //  2. setSmallIcon() lets us use our own monochrome silhouette
+        //     instead of the multi-colour app banner, which the system
+        //     would otherwise flatten into a white blob.
+        setMediaNotificationProvider(
+            DefaultMediaNotificationProvider(this).apply {
+                setSmallIcon(R.drawable.ic_stat_playback)
+            }
+        )
+
         val exo = ExoPlayer.Builder(this)
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -54,23 +69,26 @@ class PlaybackService : MediaSessionService() {
             )
             .build()
         player = exo
-        // The PendingIntent fires when the user taps the notification.
-        // For now we send them back to MainActivity — they'll see
-        // the home screen, which is the closest thing to a "now
-        // playing" surface until the proper controller lands.
-        val pendingIntent: PendingIntent? = packageManager
-            .getLaunchIntentForPackage(packageName)
-            ?.let { intent ->
-                PendingIntent.getActivity(
-                    this,
-                    0,
-                    intent,
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                )
-            }
-        mediaSession = MediaSession.Builder(this, exo)
-            .setSessionActivity(pendingIntent!!)
-            .build()
+
+        // Tapping the notification should bring the user back into the
+        // app. getLaunchIntentForPackage() is non-null for our own
+        // package in practice, but it is declared @Nullable — and
+        // setSessionActivity() rejects null — so we only set it when we
+        // actually got an intent (rather than force-unwrapping and
+        // risking a startup crash).
+        val sessionBuilder = MediaSession.Builder(this, exo)
+        packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
+            launchIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            val sessionActivity = PendingIntent.getActivity(
+                this,
+                /* requestCode = */ 0,
+                launchIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            sessionBuilder.setSessionActivity(sessionActivity)
+        }
+        mediaSession = sessionBuilder.build()
+
         Log.i(TAG, "PlaybackService created")
     }
 
@@ -78,31 +96,26 @@ class PlaybackService : MediaSessionService() {
         mediaSession
 
     /**
-     * Foreground-service notification. Required on Android 8+ so
-     * the OS lets us keep playing audio in the background. We don't
-     * actually start the foreground here yet — the real player
-     * state lives in [PlayerController] which is owned by the
-     * activity. This notification is a placeholder so the manifest
-     * entry is justified and the system has a slot to upgrade us
-     * later.
+     * NOTE: we deliberately do **not** override onBind().
+     *
+     * MediaSessionService.onBind() hands out the binder that the Media3
+     * controller (system UI, notification, bluetooth stack, Android
+     * Auto) talks to. The previous `override fun onBind(...) = null`
+     * returned null to every caller, which silently broke every
+     * external controller while still compiling cleanly — the service
+     * bound, then immediately disconnected. Letting the superclass
+     * implementation run is the whole point of extending
+     * MediaSessionService.
+     *
+     * NOTE: we deliberately do **not** override onUpdateNotification()
+     * either. MediaSessionService already starts and stops the
+     * foreground service as playback starts and stops, using the
+     * MediaNotification.Provider installed above. Re-implementing it by
+     * hand (as an earlier revision did) meant calling startForeground()
+     * on a channel that had never been created, and hard-coding
+     * FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK on a notification the
+     * framework was also managing.
      */
-    override fun onUpdateNotification(session: MediaSession) {
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.app_banner)
-            .setContentTitle("iTellyTV")
-            .setContentText("Media session active")
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-    }
 
     override fun onDestroy() {
         Log.i(TAG, "PlaybackService destroyed")
@@ -115,11 +128,7 @@ class PlaybackService : MediaSessionService() {
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null  // not used; MediaSessionService handles its own binding
-
     companion object {
         private const val TAG = "iTellyTV.PlaybackSvc"
-        private const val NOTIFICATION_ID = 1
-        private const val CHANNEL_ID = "itellytv_playback"
     }
 }

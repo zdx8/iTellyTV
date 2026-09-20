@@ -47,12 +47,17 @@ jobs:
           mkdir -p app/signing
           echo "$KEYSTORE_BASE64" | base64 --decode > app/signing/itellytv-release.keystore
           chmod 600 app/signing/itellytv-release.keystore
-          cat > keystore.properties <<EOP
-          storePassword=$KEYSTORE_PASSWORD
-          keyPassword=$KEY_ALIAS_PASSWORD
-          keyAlias=itellytv-release
-          storeFile=../app/signing/itellytv-release.keystore
-          EOP
+          # Written with printf rather than a heredoc: inside a YAML block
+          # scalar every line is indented, and an indented heredoc
+          # terminator does not terminate — the remaining commands would
+          # silently be appended to keystore.properties as extra
+          # "properties" instead of running.
+          {
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyPassword=%s\n' "$KEY_ALIAS_PASSWORD"
+            printf 'keyAlias=itellytv-release\n'
+            printf 'storeFile=app/signing/itellytv-release.keystore\n'
+          } > keystore.properties
           chmod 600 keystore.properties
 
       - name: Run unit tests

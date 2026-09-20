@@ -1,9 +1,9 @@
 package com.example.itellytv.player
 
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
-import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
@@ -57,30 +57,61 @@ class PlaybackActivity : FragmentActivity(), ChannelDrawer.Callbacks {
      */
     private var consecutiveFailures: Int = 0
 
+    /**
+     * Whether playback was running when the activity last went to the
+     * background. Used by [onStart] so we only resume what the user
+     * actually had playing.
+     */
+    private var wasPlayingBeforeStop = false
+
+    /**
+     * The pending 1.5s "auto-advance to the next channel" task. Held
+     * so it can be cancelled when the user picks a channel manually or
+     * the activity is destroyed — otherwise a stale advance would fire
+     * on top of the user's choice.
+     */
+    private val autoAdvanceRunnable = Runnable {
+        if (allChannels.isNotEmpty() && !drawer.isShown && !isFinishing && !isDestroyed) {
+            drawer.moveBy(+1)
+        }
+    }
+
+    /**
+     * Set while a centre-key ACTION_DOWN has been handled, so the
+     * matching ACTION_UP is passed through instead of being treated as
+     * "this remote only sends UP" and firing the action a second time.
+     */
+    private var centerKeyDownSeen = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_playback)
 
-        // Android 15 (API 35) is edge-to-edge by default. The video
-        // SurfaceView must paint under the system bars (we want a true
-        // full-screen video), but the debug / state / position strips
-        // should not get cut off. We push the system-bar insets onto
-        // the root FrameLayout as padding so the video frames the
-        // entire screen and the overlay strips stay readable.
-        com.example.itellytv.ui.EdgeToEdgeInsets.apply(
-            root = findViewById(R.id.root),
-            applyTop = true,
-            applyBottom = true,
-            applyLeft = true,
-            applyRight = true
-        )
-
+        // Android 15 (API 35) is edge-to-edge by default. We want the
+        // video to paint under the system bars (true full-screen), so
+        // the insets are applied to the three overlay strips — NOT to
+        // the root, which would inset the SurfaceView and letterbox
+        // the picture.
         surfaceView = findViewById(R.id.surface)
         errorView   = findViewById(R.id.error_view)
         stateView   = findViewById(R.id.state_view)
         debugView   = findViewById(R.id.debug_view)
         positionView = findViewById(R.id.position_view)
+
+        com.example.itellytv.ui.EdgeToEdgeInsets.apply(
+            root = debugView, applyTop = true,
+            applyBottom = false, applyLeft = true, applyRight = false
+        )
+        com.example.itellytv.ui.EdgeToEdgeInsets.apply(
+            root = stateView, applyTop = true,
+            applyBottom = false, applyLeft = false, applyRight = true
+        )
+        com.example.itellytv.ui.EdgeToEdgeInsets.apply(
+            root = positionView, applyTop = false,
+            applyBottom = true, applyLeft = true, applyRight = false
+        )
+
         drawer      = ChannelDrawer(findViewById(R.id.root), this)
         drawer.setup()
 
@@ -111,17 +142,23 @@ class PlaybackActivity : FragmentActivity(), ChannelDrawer.Callbacks {
             startedAtMs = System.currentTimeMillis()
             controller.play(ch.url, ch.displayName, ChannelOptions.fromJson(ch.optionsJson))
             drawer.submit(allChannels, currentIndex)
-        } else if (!streamUrl.isNullOrBlank()) {
-            val options = ChannelOptions.fromJson(optionsJson)
-            debugView.text = "URL:  $streamUrl\nName: $streamTitle"
-            if (!options.isEmpty()) debugView.append("\nOptions: ${options.pairs}")
-            startedAtMs = System.currentTimeMillis()
-            controller.play(streamUrl, streamTitle, options)
-            // No drawer population in single-channel mode.
-        } else {
+            return
+        }
+
+        if (streamUrl.isNullOrBlank()) {
             showError("[INPUT] no stream URL provided")
             return
         }
+
+        // Single-channel mode: a bare URL, no channel list, so there is
+        // nothing to populate the drawer with.
+        val options = ChannelOptions.fromJson(optionsJson)
+        debugView.text = "URL:  $streamUrl\nName: $streamTitle"
+        if (!options.isEmpty()) {
+            debugView.append("\nOptions: ${options.pairs}")
+        }
+        startedAtMs = System.currentTimeMillis()
+        controller.play(streamUrl, streamTitle, options)
     }
 
     /**
@@ -131,10 +168,17 @@ class PlaybackActivity : FragmentActivity(), ChannelDrawer.Callbacks {
         override fun onPlaybackStateChanged(state: PlayerController.PlaybackState) {
             runOnUiThread {
                 stateView.text = "state: ${state.name.lowercase()}"
+                Log.i(TAG, "onPlaybackStateChanged: $state")
+                // A channel that reaches READY is a working channel, so
+                // the failure streak is reset here rather than in
+                // onChannelSelected — the latter also runs for the
+                // auto-advance itself, which meant the counter never got
+                // past 1 and the "all channels failed" give-up never
+                // triggered.
                 if (state == PlayerController.PlaybackState.READY) {
                     errorView.visibility = View.GONE
+                    consecutiveFailures = 0
                 }
-                Log.i(TAG, "onPlaybackStateChanged: $state")
             }
         }
 
@@ -143,28 +187,24 @@ class PlaybackActivity : FragmentActivity(), ChannelDrawer.Callbacks {
                 val prefix = if (terminal) "[ERROR]" else "[WARN]"
                 showError("$prefix ${error.code}\n${error.message}")
                 // If the error is terminal AND the drawer is closed
-                // (i.e. the user isn't actively browsing), advance
-                // to the next channel so they don't get stuck on a
-                // dead stream. The PlaybackController has already
-                // burned its 3 reconnect attempts; jumping to the
-                // next channel is the next recovery step.
-                if (terminal && !drawer.isShown) {
-                    // Track consecutive failures. If every channel
-                    // has failed in a row, the IPTV server is
-                    // probably down — stop looping and show a
-                    // permanent "all channels failed" message.
-                    consecutiveFailures += 1
-                    if (consecutiveFailures >= allChannels.size) {
-                        showError("✗ All ${allChannels.size} channels failed.\n" +
-                            "Subscription server may be down.")
-                        return@runOnUiThread
-                    }
-                    mainHandler.postDelayed({
-                        if (allChannels.isNotEmpty() && !drawer.isShown) {
-                            drawer.moveBy(+1)
-                        }
-                    }, 1_500L)
+                // (i.e. the user isn't actively browsing), advance to
+                // the next channel so they don't get stuck on a dead
+                // stream.
+                if (!terminal || drawer.isShown) return@runOnUiThread
+
+                consecutiveFailures += 1
+                val total = allChannels.size
+                if (total > 0 && consecutiveFailures >= total) {
+                    // Every channel failed in a row — the source is
+                    // almost certainly down. Stop looping.
+                    showError(
+                        "✗ All $total channels failed.\n" +
+                            "Subscription server may be down."
+                    )
+                    return@runOnUiThread
                 }
+                mainHandler.removeCallbacks(autoAdvanceRunnable)
+                mainHandler.postDelayed(autoAdvanceRunnable, 1_500L)
             }
         }
 
@@ -184,9 +224,9 @@ class PlaybackActivity : FragmentActivity(), ChannelDrawer.Callbacks {
 
     override fun onChannelSelected(channel: com.example.itellytv.data.model.ChannelEntity, position: Int) {
         currentIndex = position
-        // Reset the failure counter — the user just made a fresh
-        // selection, give it a clean slate.
-        consecutiveFailures = 0
+        // The user (or the auto-advance) picked a channel — drop any
+        // other pending auto-advance so we don't skip past it.
+        mainHandler.removeCallbacks(autoAdvanceRunnable)
         debugView.text = "URL:  ${channel.url}\nName: ${channel.displayName}"
         startedAtMs = System.currentTimeMillis()
         controller.play(channel.url, channel.displayName, ChannelOptions.fromJson(channel.optionsJson))
@@ -212,24 +252,67 @@ class PlaybackActivity : FragmentActivity(), ChannelDrawer.Callbacks {
      *   - BACK → close drawer if open, else finish()
      */
     /**
-     * Intercept keys at the lowest level we can. Some Android TV
-     * builds and some Chinese OEM remotes only emit ACTION_UP for
-     * DPAD_CENTER / ENTER, and a few of them go through
-     * `dispatchKeyEvent` but not `onKeyDown` (because the focused
-     * child swallows them). We handle both and log when we do.
+     * Intercept keys at the lowest level we can.
+     *
+     * Why here and not in [onKeyDown]: the focused child (the
+     * SurfaceView, the drawer's ListView) can swallow a key before the
+     * Activity ever sees it, and several OEM TV remotes only deliver the
+     * centre key as ACTION_UP with no matching ACTION_DOWN. Handling the
+     * key at the dispatch boundary makes all of those cases behave the
+     * same — this is the fix for the "OK does nothing" reports.
+     *
+     * Repeat handling: holding UP/DOWN should machine-gun through
+     * channels and holding FFW/RW should keep seeking, so those keys
+     * honour key-repeat. Every other key ignores repeats — otherwise
+     * holding LEFT would strobe the drawer and holding OK would toggle
+     * play/pause as fast as the remote repeats.
+     *
+     * `@SuppressLint("RestrictedApi")`: `dispatchKeyEvent` is inherited
+     * through `androidx.core.app.ComponentActivity`, which is
+     * `@RestrictTo(LIBRARY_GROUP_PREFIX)`, so lint flags any override as
+     * reaching into a restricted API. The method we actually override
+     * and call through to is the public framework
+     * `android.app.Activity.dispatchKeyEvent`, so there is no
+     * stability risk — this is the documented false positive for that
+     * detector.
      */
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
-        if (event != null && event.action == KeyEvent.ACTION_DOWN) {
-            val handled = handleKey(event.keyCode)
-            if (handled) return true
+        if (event == null) return super.dispatchKeyEvent(event)
+
+        val isCenterKey = event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            event.keyCode == KeyEvent.KEYCODE_ENTER ||
+            event.keyCode == KeyEvent.KEYCODE_BUTTON_A ||
+            event.keyCode == KeyEvent.KEYCODE_BUTTON_SELECT
+
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                val repeatAllowed = event.repeatCount == 0 || isRepeatableKey(event.keyCode)
+                if (repeatAllowed && handleKey(event.keyCode)) {
+                    centerKeyDownSeen = isCenterKey
+                    return true
+                }
+            }
+            KeyEvent.ACTION_UP -> {
+                // Fallback for remotes that never send ACTION_DOWN for
+                // the centre key. Only acts when the matching DOWN was
+                // not already handled, so a well-behaved remote that
+                // sends both does not toggle twice.
+                val actOnUp = isCenterKey && !centerKeyDownSeen
+                centerKeyDownSeen = false
+                if (actOnUp && handleKey(event.keyCode)) return true
+            }
         }
         return super.dispatchKeyEvent(event)
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        val handled = handleKey(keyCode)
-        if (handled) return true
-        return super.onKeyDown(keyCode, event)
+    /** Keys where holding the button should auto-repeat. */
+    private fun isRepeatableKey(keyCode: Int): Boolean = when (keyCode) {
+        KeyEvent.KEYCODE_DPAD_UP,
+        KeyEvent.KEYCODE_DPAD_DOWN,
+        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+        KeyEvent.KEYCODE_MEDIA_REWIND -> true
+        else -> false
     }
 
     private fun handleKey(keyCode: Int): Boolean {
@@ -312,26 +395,27 @@ class PlaybackActivity : FragmentActivity(), ChannelDrawer.Callbacks {
 
     override fun onStart() {
         super.onStart()
-        // Resume playback when the activity comes back to the
-        // foreground. We restore the user's previous playWhenReady
-        // preference rather than always starting; if the user had
-        // paused before, ExoPlayer stays paused.
-        controller.resume()
+        // Only resume if we were actually playing when we went to the
+        // background. The old code called resume() unconditionally,
+        // which silently un-paused a stream the user had paused with
+        // the OK key.
+        if (wasPlayingBeforeStop) {
+            controller.resume()
+        }
     }
 
     override fun onStop() {
-        super.onStop()
-        // Going off-screen (Home button, another activity on top)
-        // pauses playback. This is the right behaviour for a media
-        // app: don't burn bandwidth in the background.
-        // (We used to do this in onPause, but onPause fires for
-        // transient interruptions like dialogs and IME that
-        // shouldn't pause playback.)
+        // Remember whether the user had playback running before we
+        // lose the foreground, then pause.
+        wasPlayingBeforeStop = controller.isPlaying()
         controller.pause()
+        super.onStop()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        mainHandler.removeCallbacks(autoAdvanceRunnable)
+        drawer.release()
         controller.release()
         val elapsed = (System.currentTimeMillis() - startedAtMs) / 1000
         Log.i(TAG, "PlaybackActivity onDestroy after ${elapsed}s")
@@ -350,21 +434,27 @@ class PlaybackActivity : FragmentActivity(), ChannelDrawer.Callbacks {
         private const val TAG = "iTellyTV.Playback"
 
         /**
-         * Robust read of the channel list. Tries the typed API-33
-         * call first, falls back to the deprecated form for older
-         * devices.
+         * Robust read of the channel list.
+         *
+         * `getParcelableArrayListExtra(String, Class)` was added in
+         * **API 33**. Calling it unconditionally — as the previous
+         * version did — throws `NoSuchMethodError` on Android 6..12,
+         * i.e. exactly the devices our `minSdk = 23` claims to
+         * support. We only take that path when the platform actually
+         * has it and fall back to the deprecated-but-universal
+         * one-arg form everywhere else.
          */
         @Suppress("DEPRECATION", "UNCHECKED_CAST")
         private fun readChannelList(
             intent: android.content.Intent
         ): List<com.example.itellytv.data.model.ChannelEntity> {
-            // API 33+: typed Class<T> form.
-            val typed = intent.getParcelableArrayListExtra(
-                EXTRA_CHANNEL_LIST,
-                com.example.itellytv.data.model.ChannelEntity::class.java
-            )
-            if (typed != null) return typed
-            // Older API: deprecated but still works.
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                val typed = intent.getParcelableArrayListExtra(
+                    EXTRA_CHANNEL_LIST,
+                    com.example.itellytv.data.model.ChannelEntity::class.java
+                )
+                if (typed != null) return typed
+            }
             val legacy = intent.getParcelableArrayListExtra<android.os.Parcelable>(
                 EXTRA_CHANNEL_LIST
             ) ?: return emptyList()

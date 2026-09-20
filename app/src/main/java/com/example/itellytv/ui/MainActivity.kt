@@ -1,5 +1,6 @@
 package com.example.itellytv.ui
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -65,10 +66,24 @@ class MainActivity : FragmentActivity() {
 
     private lateinit var channelAdapter: ChannelRowAdapter
     private var currentChannels: List<ChannelEntity> = emptyList()
+    private var currentPlaylistName: String = ""
     private var currentSubscriptionUrl: String? = null
     private val numberBuffer = ChannelIndexBuffer()
+
+    /**
+     * One-shot guard for the cold-start "jump straight into the first
+     * channel" behaviour. It stays `true` for the rest of the process
+     * after the first auto-play: if we reset it we would re-enter the
+     * player on every subsequent Room emission, which is exactly what
+     * made the home screen unusable after the user pressed Back.
+     */
     private var hasAutoPlayedFirstChannel = false
+
+    /** Set when we start the player, consumed by [onResume]. */
     private var cameFromPlayback = false
+
+    /** Row the user last started playback from, so Back lands on it. */
+    private var lastPlayedIndex: Int = 0
 
     /**
      * Catch-all handler for uncaught exceptions inside our coroutines.
@@ -221,13 +236,20 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // If we're coming back from PlaybackActivity, the user is
-        // now choosing — clear the auto-play flag so the next time
-        // channels arrive we render the list instead of jumping
-        // straight back into the player.
+        // Returning from the player.
+        //
+        // On the very first launch [renderChannels] auto-plays the first
+        // channel and returns *before* it ever calls
+        // `channelAdapter.submit(...)` — the ListView was deliberately
+        // left un-rendered to avoid a one-frame flash of the list before
+        // the activity transition. Room does not re-emit just because we
+        // came back from another activity, so without an explicit
+        // re-render here the home screen stays an empty ListView for the
+        // rest of the session. That was the "Back from playback shows a
+        // blank list" bug.
         if (cameFromPlayback) {
-            hasAutoPlayedFirstChannel = false
             cameFromPlayback = false
+            renderCurrentList()
         }
         // After returning from PlaybackActivity, re-anchor the list
         // focus so D-pad is immediately usable.
@@ -237,26 +259,77 @@ class MainActivity : FragmentActivity() {
     }
 
     /**
-     * One single key handler covers:
-     *   - D-pad OK / ENTER on a row → play
-     *   - Number keys 0-9 → buffer & jump
-     *   - Long-press OK / ENTER on a row → handled by setOnItemLongClickListener
-     *   - Back → exit (default)
+     * Paint the list from the channels we already hold, without waiting
+     * for Room to re-emit. Used when coming back from the player.
+     */
+    private fun renderCurrentList() {
+        if (isFinishing || isDestroyed) return
+        if (currentChannels.isEmpty()) {
+            // The playlist was deleted (or never loaded) while we were
+            // in the player — go back to the network for a fresh copy.
+            refreshSubscription()
+            return
+        }
+        channelAdapter.submit(currentChannels)
+        listView.visibility = View.VISIBLE
+        progress.visibility = View.GONE
+        statusView.text = "${currentChannels.size} channels · $currentPlaylistName"
+        statusView.setTextColor(ColorExt.statusOk(this))
+        // Land the cursor back on the channel the user was watching,
+        // not on row 0 — pressing Back from the player and then OK
+        // should resume what they were on.
+        listView.setSelection(lastPlayedIndex.coerceIn(0, currentChannels.size - 1))
+    }
+
+    /**
+     * Key handling lives at the Activity boundary rather than in
+     * [onKeyDown] so the result does not depend on which child currently
+     * holds focus:
+     *
+     *   - a `ListView` fires its own item-click on OK,
+     *   - a focused `Button` (our Reload button) consumes OK itself, so
+     *     `onKeyDown` never runs,
+     *   - some OEM TV remotes only deliver the centre key as
+     *     `dispatchKeyEvent` and never as `onKeyDown`.
+     *
+     * We intercept only the digit keys here (they are unambiguous — no
+     * widget wants them) and let everything else fall through to the
+     * normal focus navigation.
+     *
+     * `@SuppressLint("RestrictedApi")`: `dispatchKeyEvent` is inherited
+     * through `androidx.core.app.ComponentActivity`, which is
+     * `@RestrictTo(LIBRARY_GROUP_PREFIX)`, so lint flags any override as
+     * reaching into a restricted API. The method actually being
+     * overridden / called through is the public framework
+     * `android.app.Activity.dispatchKeyEvent` — the documented false
+     * positive for that detector.
+     */
+    @SuppressLint("RestrictedApi")
+    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+        if (event != null && event.action == KeyEvent.ACTION_DOWN) {
+            val digit = digitFromKeyCode(event.keyCode)
+            if (digit != null) {
+                handleDigit(digit)
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /**
+     * OK / ENTER safety net.
+     *
+     * Only acts when the channel list actually holds focus — reading
+     * `listView.selectedItemPosition` while the Reload button is focused
+     * returns a stale row and would start playback instead of reloading.
+     * (`ViewGroup.hasFocus()` is true when the view itself *or* any
+     * descendant, i.e. a row, has focus.)
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // 0-9 digit keys: build the index buffer and jump.
-        val digit = digitFromKeyCode(keyCode)
-        if (digit != null) {
-            handleDigit(digit)
-            return true
-        }
-
-        // OK / ENTER on the list (when a row is selected) plays it.
-        // (The ListView itself fires onItemClick on OK by default; this
-        // branch is just a safety net in case focus is on the
-        // Reload button.)
-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-            keyCode == KeyEvent.KEYCODE_ENTER) {
+        if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                keyCode == KeyEvent.KEYCODE_ENTER) &&
+            listView.hasFocus()
+        ) {
             val pos = listView.selectedItemPosition
             val channel = currentChannels.getOrNull(pos)
             if (channel != null) {
@@ -289,8 +362,10 @@ class MainActivity : FragmentActivity() {
         if (target < 1) return
         val pos = target - 1   // 1-based → 0-based
         if (pos >= currentChannels.size) {
-            // Out of range — show a brief hint and don't move
-            flashNumberBuffer("#$buffer (out of range)")
+            // Out of range — show a brief hint and don't move.
+            // The "#" is added by flashNumberBuffer, so don't
+            // include it here (the old code produced "##123").
+            flashNumberBuffer("$buffer (out of range)")
             return
         }
         listView.setSelection(pos)
@@ -390,7 +465,14 @@ class MainActivity : FragmentActivity() {
         // old views would leak the activity reference).
         if (isFinishing || isDestroyed) return
         currentChannels = channels
+        currentPlaylistName = playlistName
         if (channels.isEmpty()) {
+            // Clear the adapter too — otherwise the previous
+            // playlist's rows stay on screen underneath the error
+            // message, which is how a deleted/emptied playlist ends up
+            // looking like it still has channels.
+            channelAdapter.submit(emptyList())
+            listView.visibility = View.VISIBLE
             showError("No channels in $playlistName")
             return
         }
@@ -438,6 +520,14 @@ class MainActivity : FragmentActivity() {
     // ---------- Playback ----------
 
     private fun playChannel(channel: ChannelEntity) {
+        // Match on the primary key first: two rows can legitimately be
+        // equal by value (same name/URL from two groups), and
+        // `indexOf` would then always pick the first one, so the drawer
+        // would open on the wrong row.
+        val idx = currentChannels.indexOfFirst { it.id == channel.id }
+            .takeIf { it >= 0 }
+            ?: currentChannels.indexOf(channel)
+
         val intent = Intent(this, PlaybackActivity::class.java).apply {
             putExtra(PlaybackActivity.EXTRA_STREAM_URL, channel.url)
             putExtra(PlaybackActivity.EXTRA_STREAM_TITLE, channel.displayName)
@@ -448,11 +538,11 @@ class MainActivity : FragmentActivity() {
                 PlaybackActivity.EXTRA_CHANNEL_LIST,
                 ArrayList(currentChannels)
             )
-            val idx = currentChannels.indexOf(channel)
             putExtra(PlaybackActivity.EXTRA_CHANNEL_INDEX, idx)
         }
+        if (idx >= 0) lastPlayedIndex = idx
         // Mark that the next onResume came from the player, so we
-        // re-render the list normally instead of auto-playing again.
+        // re-render the list instead of jumping straight back in.
         cameFromPlayback = true
         startActivity(intent)
     }

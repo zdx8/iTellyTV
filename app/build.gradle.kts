@@ -29,8 +29,8 @@ android {
         applicationId = "com.example.itellytv"
         minSdk = 23          // Android 6.0 (Marshmallow)
         targetSdk = 35       // Android 15 (Vanilla Ice Cream)
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     // Read release-signing credentials from keystore.properties (which
@@ -44,7 +44,18 @@ android {
                 if (f.exists()) f.inputStream().use { load(it) }
             }
             if (keystoreProps.isNotEmpty()) {
-                storeFile = file(keystoreProps.getProperty("storeFile", "../signing/itellytv-release.keystore"))
+                // Resolve `storeFile` leniently. The value is written by
+                // hand (and by the release workflow), and a bare relative
+                // path is ambiguous: Gradle would resolve it against this
+                // module's directory, but people naturally write paths
+                // relative to the repository root. Try both, and fall
+                // back to the module-relative interpretation so the error
+                // message still names a concrete file.
+                val rawStoreFile = keystoreProps.getProperty("storeFile")?.trim()
+                if (!rawStoreFile.isNullOrEmpty()) {
+                    val candidates = listOf(file(rawStoreFile), rootProject.file(rawStoreFile))
+                    storeFile = candidates.firstOrNull { it.exists() } ?: candidates.first()
+                }
                 storePassword = keystoreProps.getProperty("storePassword", "")
                 keyAlias = keystoreProps.getProperty("keyAlias", "itellytv-release")
                 keyPassword = keystoreProps.getProperty("keyPassword", "")

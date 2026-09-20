@@ -67,8 +67,19 @@ class ChannelDrawer(
         val host = rootView.findViewById<FrameLayout>(R.id.drawer_host) ?: return
         val view = android.view.LayoutInflater.from(rootView.context)
             .inflate(R.layout.view_channel_drawer, host, false)
+        // The drawer must only cover the left ~30% of the screen so the
+        // video keeps playing, visible, on the right. A FrameLayout
+        // can't express a percentage in XML, so we compute the width
+        // here from the real display metrics (which also handles the
+        // 720p/1080p/4K spread across TV boxes). The XML root declares
+        // MATCH_PARENT and is deliberately overridden.
+        val metrics = rootView.resources.displayMetrics
+        val minWidthPx = (MIN_DRAWER_WIDTH_DP * metrics.density).toInt()
+        val drawerWidthPx = (metrics.widthPixels * DRAWER_WIDTH_FRACTION)
+            .toInt()
+            .coerceAtLeast(minWidthPx)
         host.addView(view, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
+            drawerWidthPx,
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
         listView = view.findViewById(R.id.drawer_list)
@@ -118,12 +129,16 @@ class ChannelDrawer(
      * Move the highlight up or down AND switch playback. Used
      * when the drawer is *not* shown — a quick "channel surf" on
      * the D-pad without any UI noise.
+     *
+     * Wraps at the ends (last → first, first → last). That is the
+     * set-top-box convention, and — more importantly — it means the
+     * auto-advance-on-error path can't get permanently stuck on the
+     * final channel. A one-channel list still returns null (no
+     * movement), so there is no callback loop.
      */
     fun moveBy(delta: Int): ChannelEntity? {
-        if (channels.isEmpty()) return null
-        val newIndex = ((currentIndex.takeIf { it >= 0 } ?: 0) + delta)
-            .coerceIn(0, channels.size - 1)
-        if (newIndex == currentIndex) return null
+        val newIndex = ChannelNavigation.wrapIndex(currentIndex, delta, channels.size)
+        if (newIndex < 0 || newIndex == currentIndex) return null
         currentIndex = newIndex
         browseIndex = newIndex
         adapter?.setCurrentIndex(newIndex)
@@ -136,12 +151,14 @@ class ChannelDrawer(
     /**
      * Move the browse cursor up or down WITHOUT switching playback.
      * Used when the drawer is open — the user is browsing the
-     * list and will press OK to commit the selection.
+     * list and will press OK to commit the selection. Clamped (not
+     * wrapped) so the cursor stays put at the ends instead of
+     * jumping across the whole list.
      */
     fun browseBy(delta: Int): Int {
-        if (channels.isEmpty()) return browseIndex
         val seed = if (browseIndex in channels.indices) browseIndex else currentIndex
-        val newIndex = (seed + delta).coerceIn(0, channels.size - 1)
+        val newIndex = ChannelNavigation.clampIndex(seed, delta, channels.size)
+        if (newIndex < 0) return browseIndex
         if (newIndex == browseIndex) return newIndex
         browseIndex = newIndex
         // The ListView's own selection is what we paint as the
@@ -195,6 +212,26 @@ class ChannelDrawer(
         if (state == State.SHOWN) scheduleAutoHide()
     }
 
+    /**
+     * Tear the drawer down for good. Cancels any pending
+     * auto-hide callback so the Handler can't hold a reference to
+     * this drawer (and, through it, the whole Activity view tree)
+     * after the Activity is destroyed. Call this from
+     * `Activity.onDestroy()`.
+     *
+     * Safe to call more than once.
+     */
+    fun release() {
+        state = State.HIDDEN
+        rootHandler.removeCallbacks(hideRunnable)
+        listView?.setOnItemClickListener(null)
+        listView = null
+        adapter = null
+        channels = emptyList()
+        currentIndex = -1
+        browseIndex = -1
+    }
+
     val isShown: Boolean get() = state == State.SHOWN
 
     /**
@@ -230,5 +267,19 @@ class ChannelDrawer(
 
     companion object {
         const val AUTO_HIDE_MS = 3_000L
+
+        /**
+         * Drawer width as a fraction of the screen. 0.30 covers the
+         * left third and leaves the video readable on the right — the
+         * figure the README and the macOS original both quote.
+         */
+        private const val DRAWER_WIDTH_FRACTION = 0.30f
+
+        /**
+         * Floor for very small / low-density panels (and for the odd
+         * box that reports a narrow display), so channel names are
+         * never clipped to a couple of characters.
+         */
+        private const val MIN_DRAWER_WIDTH_DP = 220f
     }
 }

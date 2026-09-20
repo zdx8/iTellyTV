@@ -3,7 +3,7 @@
 Android TV 13+ IPTV / 媒体播放器。设计继承自
 [iTelly-macOS](https://github.com/zdx8/iTelly-macOS)，播放内核用
 [Media3 / ExoPlayer](https://github.com/androidx/media) (Apache 2.0)
-代替 libVLC，所以 APK 比 macOS 版小得多（4.2 MB 而不是 81 MB），**不传染
+代替 libVLC，所以 APK 比 macOS 版小得多（4.4 MB 而不是 81 MB），**不传染
 GPL**。
 
 |  | iTelly-macOS | **iTellyTV** |
@@ -11,25 +11,25 @@ GPL**。
 | 平台 | macOS 14+ (arm64) | **Android TV 13 / 14 / 15 / 16** |
 | 播放内核 | libVLC（GPLv2+） | **Media3 / ExoPlayer（Apache 2.0）** |
 | 协议 | HLS, RTSP, RTMP, UDP, HTTP, FTP | 同等（除 FTP, MMS） |
-| APK 大小 | 81 MB | **4.2 MB**（R8 压缩 + resource shrink） |
+| APK 大小 | 81 MB | **4.4 MB**（R8 压缩 + resource shrink） |
 | 签名 | — | **已签名**（CI 从 secrets 读 keystore） |
 | License | GPL-2.0-or-later | **Apache 2.0** |
 
 ## 安装
 
 到 [Releases](https://github.com/zdx8/iTellyTV/releases) 下载最新的
-`iTellyTV-vX.Y.Z-release.apk`（**已签名 release build**，4.2 MB；也提供
+`iTellyTV-vX.Y.Z-release.apk`（**已签名 release build**，4.4 MB；也提供
 带调试信息的 `-debug.apk`），用 adb 安装到 Android TV 设备：
 
 ```bash
-adb install -r iTellyTV-v1.1.0-release.apk
+adb install -r iTellyTV-v1.2.0-release.apk
 adb shell am start -n com.example.itellytv/.ui.MainActivity
 ```
 
 校验下载完整性：
 
 ```bash
-shasum -a 256 --check iTellyTV-v1.1.0-release.apk.sha256
+shasum -a 256 --check iTellyTV-v1.2.0-release.apk.sha256
 ```
 
 首次启动会提示"是否允许安装未知应用"——**设置 → 安全 → 允许此来源**。
@@ -51,7 +51,7 @@ http://10.0.0.51:1905/interface.m3u?profile=keren
 - ✅ 长按 OK 收藏频道 / 取消收藏
 - ✅ 数字键跳台（1-2-3 → 跳到第 123 个频道）
 - ✅ D-pad 上下键静默切台，OK 选台
-- ✅ 左键召唤频道列表抽屉（30s 自动隐藏）
+- ✅ 左键召唤频道列表抽屉（无操作 3s 自动隐藏，操作中不消失）
 - ✅ 自动重连退避（1s/2s/4s，最多 3 次）
 - ✅ 15s 无进度看门狗（防止卡死）
 - ✅ 错误连续失败自动跳下一频道；全失败显示"服务器挂了"
@@ -78,7 +78,7 @@ http://10.0.0.51:1905/interface.m3u?profile=keren
 3. 按 **←** → 左侧 30% 抽屉滑出，**当前频道蓝色高亮**
 4. 按 **↓** → 抽屋里**光标下移**（视频不变）
 5. 按 **OK** → 切到光标那个频道，抽屉自动关闭
-6. 5 秒不按 → 抽屋自动消失
+6. 3 秒不按 → 抽屋自动消失（按 OK 选台后立即消失）
 7. 长按 OK 在某频道 → 收藏 / 取消收藏（左侧出现 ★ 标记）
 
 ## 项目结构
@@ -100,11 +100,14 @@ iTellyTV/
 │           │   ├── model/NaturalSortKey.kt  "CCTV/湖系/其他中文/其他" 4 桶
 │           │   ├── repository/ChannelRepository.kt
 │           │   ├── repository/SubscriptionRefresher.kt   5s/15s/30s 退避
+│           │   ├── source/ChannelMerge.kt   刷新订阅时原地合并（保留收藏/历史）
 │           │   └── source/{Daos.kt, iTellyDatabase.kt}
 │           ├── player/
 │           │   ├── PlayerConfig.kt       1.5s 直播缓冲 / 4s VOD
 │           │   ├── PlayerController.kt    ExoPlayer + 15s 看门狗
-│           │   ├── ChannelDrawer.kt       左侧抽屉 (5s 自动隐藏)
+│           │   ├── PlaybackService.kt     MediaSession + 前台服务
+│           │   ├── ChannelDrawer.kt       左侧 30% 抽屉 (3s 自动隐藏)
+│           │   ├── ChannelNavigation.kt   上下键环绕 / 光标夹取（纯函数）
 │           │   ├── ChannelDrawerAdapter.kt
 │           │   ├── ChannelOptions.kt      #EXTVLCOPT 解析 → DataSource headers
 │           │   ├── Diagnostics.kt        离线回归断言（CI 用）
@@ -153,8 +156,8 @@ iTelly-macOS README 列了"5 个值得记录的实现要点"——iTellyTV 全�
 cp .env.sh.example .env.sh && $EDITOR .env.sh   # 填 JDK 17 + Android SDK 路径
 source .env.sh
 ./gradlew :app:assembleDebug                    # → app/build/outputs/apk/debug/app-debug.apk
-./gradlew :app:assembleRelease                  # → app-release.apk（已签名，4.2 MB）
-./gradlew :app:testDebugUnitTest                # 70 unit tests
+./gradlew :app:assembleRelease                  # → app-release.apk（已签名，4.4 MB）
+./gradlew :app:testDebugUnitTest                # 100 unit tests
 ./gradlew :app:lint                             # Android Lint
 ./scripts/diagnose.sh                           # self-test (mirror macOS --diagnose)
 ```
@@ -209,16 +212,18 @@ gh secret set KEY_ALIAS_PASSWORD
 
 ```bash
 ./gradlew :app:testDebugUnitTest
-# 70 tests, 0 failures
+# 100 tests, 0 failures
 ```
 
-覆盖：
+覆盖（100 个测试）：
 - M3U parser（14 个测试，含引号内逗号、EXTVLCOPT 白名单、UTF-8 BOM、GB18030 fallback）
 - Natural sort（14 个测试，含 "CCTV" → "湖系" → "其他中文" → "其他" 4 桶排序）
 - Channel options 解析（9 个测试，含 proxy / referer 变体）
 - Player config（7 个测试，含重连退避 + buffer 大小）
 - ChannelIndexBuffer（5 个测试，含数字键 buffer + 超时）
 - ChannelDrawerAdapter（5 个测试，isRowSelected 纯函数）
+- ChannelNavigation（15 个测试，上下键环绕 / 抽屋光标夹取边界）
+- ChannelMerge（16 个测试，刷新订阅时原地合并，不丢收藏与历史）
 - PlayerController（12 个测试，error 分类 + 重连退避计算）
 - ChannelEntityDisplayName（4 个测试，tvgName 优先）
 
@@ -234,12 +239,19 @@ gh secret set KEY_ALIAS_PASSWORD
 | ✅ | 错误连续失败保护 | 1.0.0 |
 | ✅ | Android 15 edge-to-edge | 1.0.0 |
 | ✅ | 签名 release APK（CI 从 secrets 读 keystore） | 1.1.0 |
-| ✅ | ProGuard / R8 minify（11 MB → 4.2 MB） | 1.1.0 |
+| ✅ | ProGuard / R8 minify（11.7 MB → 4.4 MB，-62%） | 1.1.0 |
 | ✅ | MediaSession + 前台服务 | 1.1.0 |
+| ✅ | 全量代码审计：修复 19 个 severe/high/medium 缺陷 | 1.2.0 |
+| ✅ | 订阅刷新改为原地合并（不再清空收藏 / 最近播放） | 1.2.0 |
+| ✅ | 重复订阅源不再每次启动都新建一份播放列表 | 1.2.0 |
+| ✅ | 播放页 Back 返回后主页频道列表空白 → 修复 | 1.2.0 |
+| ✅ | 抽屋真实 30% 宽（原先铺满全屏遮挡视频） | 1.2.0 |
+| ✅ | MediaSession 绑定被 `onBind` 返回 null 打断 → 修复 | 1.2.0 |
+| ✅ | `lintDebug` 0 error（原 4 error） | 1.2.0 |
 | 🔲 | 把 ExoPlayer 完整迁移进 PlaybackService（当前 service 是占位） | P2 |
 | 🔲 | EPG 节目单（XMLTV） | P3 |
 | 🔲 | 媒体库（本地视频 / USB / SMB） | P3 |
-| 🔲 | 多播放列表切换 UI | P3 |
+| 🔲 | 多播放列表切换 UI（当前只展示第一个播放列表） | P3 |
 | 🔲 | Leanback → Compose for TV 迁移 | P4 |
 
 ## 许可证

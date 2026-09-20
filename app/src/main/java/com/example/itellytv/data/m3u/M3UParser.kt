@@ -172,8 +172,13 @@ class M3UParser {
         val attrPattern = Pattern.compile("""([A-Za-z0-9_\-]+)\s*=\s*"([^"]*)"""")
         val matcher = attrPattern.matcher(body)
         while (matcher.find()) {
-            val key = matcher.group(1).lowercase()
-            val value = matcher.group(2)
+            // group(1) / group(2) are platform types (String!). We
+            // matched, so they cannot be null in practice, but Kotlin
+            // 2.0 warns and 2.1+ errors on calling members of a
+            // nullable receiver. Be explicit rather than rely on the
+            // platform type.
+            val key = matcher.group(1)?.lowercase() ?: continue
+            val value = matcher.group(2) ?: continue
             attributes[key] = value
             quotedRanges += matcher.start() until matcher.end()
         }

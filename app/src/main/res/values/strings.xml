@@ -4,4 +4,5 @@
     <string name="menu_play_now">▶  Play now</string>
     <string name="menu_add_favorite">★  Add to favorites</string>
     <string name="menu_remove_favorite">☆  Remove from favorites</string>
+    <string name="drawer_title">频道</string>
 </resources>

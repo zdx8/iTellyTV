@@ -63,7 +63,7 @@ class ChannelRepository(
                     loadedAtMs = System.currentTimeMillis()
                 )
             )
-            val rows = channelDao.replaceForPlaylist(
+            channelDao.replaceForPlaylist(
                 playlistId = playlistId,
                 newChannels = parsed.channels.map { ch ->
                     ChannelEntity(
@@ -85,6 +85,13 @@ class ChannelRepository(
      * Load (or refresh) a remote subscription. Returns a Result
      * wrapping the playlist id + channel count.
      *
+     * Idempotent by URL: if a playlist with this [url] already exists
+     * we reuse its row and just replace its channels. Previously every
+     * call inserted a fresh [PlaylistEntity], so a subscription that
+     * was refreshed on each launch grew the database without bound —
+     * N launches meant N playlists and N copies of every channel, all
+     * of which appeared in the playlist picker.
+     *
      * Uses [java.net.HttpURLConnection] instead of OkHttp because
      * some older Android TV boxes (Android 9, many Chinese OEM
      * builds) ship a buggy okio native lib that crashes inside
@@ -100,20 +107,28 @@ class ChannelRepository(
                 val parsed = parser.parse(text)
                 require(parsed.channels.isNotEmpty()) { "订阅源不含任何 #EXTINF 条目" }
 
-                val newId = playlistDao.insert(
-                    PlaylistEntity(
-                        name = suggestedName ?: URI.create(url).host ?: url,
-                        localPath = null,
-                        remoteUrl = url,
-                        loadedAtMs = System.currentTimeMillis(),
-                        autoRefresh = false
+                val existing = playlistDao.findByRemoteUrl(url)
+                val playlistId = if (existing != null) {
+                    // Refresh in place — keep the id (and therefore the
+                    // user's navigation position) stable.
+                    playlistDao.updateLoadedAt(existing.id, System.currentTimeMillis())
+                    existing.id
+                } else {
+                    playlistDao.insert(
+                        PlaylistEntity(
+                            name = suggestedName ?: URI.create(url).host ?: url,
+                            localPath = null,
+                            remoteUrl = url,
+                            loadedAtMs = System.currentTimeMillis(),
+                            autoRefresh = false
+                        )
                     )
-                )
+                }
                 channelDao.replaceForPlaylist(
-                    playlistId = newId,
+                    playlistId = playlistId,
                     newChannels = parsed.channels.map { ch ->
                         ChannelEntity(
-                            playlistId = newId,
+                            playlistId = playlistId,
                             name = ch.name,
                             url = ch.url,
                             groupTitle = ch.groupTitle,
@@ -123,7 +138,7 @@ class ChannelRepository(
                         )
                     }
                 )
-                ImportSummary(newId, parsed.channelCount)
+                ImportSummary(playlistId, parsed.channelCount)
             }
         }
 
