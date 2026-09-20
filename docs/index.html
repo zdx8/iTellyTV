@@ -19,9 +19,12 @@
         <h1>iTellyTV</h1>
         <p class="tagline">Android TV 上的 IPTV / 媒体播放器。打开即看，不上传任何数据。</p>
         <div class="badges">
+          <span class="badge">v1.1.0</span>
           <span class="badge">Android TV 13+</span>
           <span class="badge">API 23+</span>
-          <span class="badge">~11 MB APK</span>
+          <span class="badge">4.2 MB APK</span>
+          <span class="badge">R8 压缩</span>
+          <span class="badge">已签名</span>
           <span class="badge">Apache 2.0</span>
           <span class="badge">Media3 / ExoPlayer</span>
         </div>
@@ -53,7 +56,7 @@
         <div>
           <div class="label">APK 大小</div>
           <div class="row-them">~81 MB</div>
-          <div class="row-us"><strong>~11 MB</strong></div>
+          <div class="row-us"><strong>4.2 MB</strong>（R8 压缩后）</div>
         </div>
         <div>
           <div class="label">许可证</div>
@@ -96,16 +99,26 @@
           <h3>Room + Flow 数据层</h3>
           <p>Activity 重建不丢数据。Flow 自动响应数据库变化。70 个 unit test 覆盖核心逻辑。</p>
         </div>
+        <div class="feature">
+          <h3>系统媒体控制</h3>
+          <p>MediaSession + 前台服务，Android TV 的系统媒体通知与遥控器播放/暂停键在后台也能用。</p>
+        </div>
+        <div class="feature">
+          <h3>签名 release 构建</h3>
+          <p>GitHub Actions 从仓库 secrets 读 keystore，产出可直接 <code>adb install</code> 的已签名 APK，附 SHA-256 校验和。</p>
+        </div>
       </div>
     </section>
 
     <!-- ====================== 安装 ====================== -->
     <section>
       <h2>安装</h2>
-      <p>到 <a href="https://github.com/zdx8/iTellyTV/releases/latest">Releases</a> 下载最新的 <code>iTellyTV-vX.Y.Z-debug.apk</code>，用 adb 装到 Android TV：</p>
-      <pre><code>adb install -r iTellyTV-v1.0.0-debug.apk
+      <p>到 <a href="https://github.com/zdx8/iTellyTV/releases/latest">Releases</a> 下载最新的 <code>iTellyTV-v1.1.0-release.apk</code>（**已签名**，4.2 MB），用 adb 装到 Android TV：</p>
+      <pre><code>adb install -r iTellyTV-v1.1.0-release.apk
 adb shell am start -n com.example.itellytv/.ui.MainActivity</code></pre>
       <p>首次启动会提示"是否允许安装未知应用"——去 <strong>设置 → 安全 → 允许此来源</strong>。</p>
+      <p>校验下载完整性：</p>
+      <pre><code>shasum -a 256 --check iTellyTV-v1.1.0-release.apk.sha256</code></pre>
       <h2 style="margin-top: 32px">订阅源</h2>
       <p>iTellyTV 默认加载您 home 网络上的 IPTV 订阅：</p>
       <pre><code>http://10.0.0.51:1905/interface.m3u?profile=keren</code></pre>
@@ -152,12 +165,25 @@ adb shell am start -n com.example.itellytv/.ui.MainActivity</code></pre>
       </ol>
     </section>
 
+    <!-- ====================== 最新版本 ====================== -->
+    <section>
+      <h2>最新版本 v1.1.0</h2>
+      <ul>
+        <li><strong>签名 release APK</strong> — GitHub Actions 从仓库 secrets 解码 keystore，产出可直接安装的已签名 APK（APK Signature Scheme v1 + v2 均通过 <code>apksigner verify</code>）。</li>
+        <li><strong>R8 压缩</strong> — release 构建启用 minify + resource shrink，APK 从 11 MB 降到 <strong>4.2 MB（-62%）</strong>，70 个 unit test 仍全绿。</li>
+        <li><strong>系统媒体控制</strong> — 注册 <code>PlaybackService</code>（<code>MediaSessionService</code>，<code>foregroundServiceType=mediaPlayback</code>），Android TV 的媒体通知与遥控器播放/暂停键在后台可用。</li>
+        <li><strong>SHA-256 校验和</strong> — 每个 APK 附件都带 <code>.sha256</code> 文件。</li>
+      </ul>
+      <p>历史版本见 <a href="https://github.com/zdx8/iTellyTV/releases">Releases</a>。v1.0.0 是首个公开版本。</p>
+    </section>
+
     <!-- ====================== 兼容性 ====================== -->
     <section>
       <h2>兼容性</h2>
       <p><strong>已验证：</strong>Android TV 13 (API 33) 设计目标。<br>
          <strong>支持：</strong>Android TV 14 / 15 / 16 (API 34-36)。Android 15+ 的 edge-to-edge 已在 <code>EdgeToEdgeInsets</code> 处理。</p>
       <p>测试覆盖 70 个 unit test：M3U 解析、自然排序、播放器调参、退避算法、抽屉选中状态、错误分类。</p>
+      <p>构建链：AGP 8.6.1 + Kotlin 2.0.21 + Media3 1.7.0 + Room 2.7.0，<code>compileSdk 35</code> / <code>targetSdk 35</code> / <code>minSdk 23</code>。</p>
     </section>
 
     <!-- ====================== 链接 ====================== -->
@@ -170,8 +196,9 @@ adb shell am start -n com.example.itellytv/.ui.MainActivity</code></pre>
         <li><a href="https://github.com/zdx8/iTellyTV/blob/main/LICENSE">Apache 2.0 许可证</a></li>
       </ul>
       <p style="color: var(--fg-muted); font-size: 14px; margin-top: 32px;">
-        © 2025 zdx8 · Licensed under Apache 2.0<br>
-        <a href="https://github.com/zdx8/iTellyTV">github.com/zdx8/iTellyTV</a>
+        © 2025–2026 zdx8 · Licensed under Apache 2.0<br>
+        <a href="https://github.com/zdx8/iTellyTV">github.com/zdx8/iTellyTV</a> ·
+        <a href="https://github.com/zdx8/iTellyTV/releases/latest">最新版本 v1.1.0</a>
       </p>
     </section>
 

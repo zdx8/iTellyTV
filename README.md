@@ -3,7 +3,7 @@
 Android TV 13+ IPTV / 媒体播放器。设计继承自
 [iTelly-macOS](https://github.com/zdx8/iTelly-macOS)，播放内核用
 [Media3 / ExoPlayer](https://github.com/androidx/media) (Apache 2.0)
-代替 libVLC，所以 APK 比 macOS 版小得多（约 11 MB 而不是 81 MB），**不传染
+代替 libVLC，所以 APK 比 macOS 版小得多（4.2 MB 而不是 81 MB），**不传染
 GPL**。
 
 |  | iTelly-macOS | **iTellyTV** |
@@ -11,19 +11,25 @@ GPL**。
 | 平台 | macOS 14+ (arm64) | **Android TV 13 / 14 / 15 / 16** |
 | 播放内核 | libVLC（GPLv2+） | **Media3 / ExoPlayer（Apache 2.0）** |
 | 协议 | HLS, RTSP, RTMP, UDP, HTTP, FTP | 同等（除 FTP, MMS） |
-| APK 大小 | 81 MB | **~11 MB** |
+| APK 大小 | 81 MB | **4.2 MB**（R8 压缩 + resource shrink） |
+| 签名 | — | **已签名**（CI 从 secrets 读 keystore） |
 | License | GPL-2.0-or-later | **Apache 2.0** |
 
 ## 安装
 
 到 [Releases](https://github.com/zdx8/iTellyTV/releases) 下载最新的
-`iTellyTV-vX.Y.Z-debug.apk`（debug build，sandbox-friendly）或
-`iTellyTV-vX.Y.Z-release-unsigned.apk`（release build，需自签名），
-用 adb 安装到 Android TV 设备：
+`iTellyTV-vX.Y.Z-release.apk`（**已签名 release build**，4.2 MB；也提供
+带调试信息的 `-debug.apk`），用 adb 安装到 Android TV 设备：
 
 ```bash
-adb install -r iTellyTV-v1.0.0-debug.apk
+adb install -r iTellyTV-v1.1.0-release.apk
 adb shell am start -n com.example.itellytv/.ui.MainActivity
+```
+
+校验下载完整性：
+
+```bash
+shasum -a 256 --check iTellyTV-v1.1.0-release.apk.sha256
 ```
 
 首次启动会提示"是否允许安装未知应用"——**设置 → 安全 → 允许此来源**。
@@ -144,12 +150,50 @@ iTelly-macOS README 列了"5 个值得记录的实现要点"——iTellyTV 全�
 ## Build
 
 ```bash
-source .env.sh                              # JDK 17 + writable Gradle/SDK homes
-./gradlew :app:assembleDebug                # → app/build/outputs/apk/debug/app-debug.apk
-./gradlew :app:assembleRelease              # unsigned release build
-./gradlew :app:testDebugUnitTest            # 70 unit tests
-./gradlew :app:lint                         # Android Lint
-./scripts/diagnose.sh                       # self-test (mirror macOS --diagnose)
+cp .env.sh.example .env.sh && $EDITOR .env.sh   # 填 JDK 17 + Android SDK 路径
+source .env.sh
+./gradlew :app:assembleDebug                    # → app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease                  # → app-release.apk（已签名，4.2 MB）
+./gradlew :app:testDebugUnitTest                # 70 unit tests
+./gradlew :app:lint                             # Android Lint
+./scripts/diagnose.sh                           # self-test (mirror macOS --diagnose)
+```
+
+### Release 签名（本地）
+
+CI 从 GitHub Secrets 读 keystore；本地构建需要自己放一份：
+
+```bash
+# 1. 生成 keystore（一次性；.keystore 文件不要提交）
+keytool -genkeypair -v \
+  -keystore app/signing/itellytv-release.keystore \
+  -alias itellytv-release -keyalg RSA -keysize 2048 -validity 10950 \
+  -storepass 'YOUR_PASSWORD' -keypass 'YOUR_PASSWORD' \
+  -dname "CN=iTellyTV, OU=zdx8, O=zdx8, L=Beijing, ST=Beijing, C=CN"
+
+# 2. 复制模板并填密码
+cp keystore.properties.example keystore.properties && $EDITOR keystore.properties
+
+# 3. 构建
+./gradlew :app:assembleRelease
+```
+
+没有 `keystore.properties` 时 release 构建仍会跑，只是产出 unsigned APK。
+
+### CI 签名（GitHub Actions）
+
+仓库需要 3 个 secret：
+
+| Secret | 内容 |
+|---|---|
+| `KEYSTORE_BASE64` | `base64 -i app/signing/itellytv-release.keystore` 的输出 |
+| `KEYSTORE_PASSWORD` | keystore 密码 |
+| `KEY_ALIAS_PASSWORD` | key 密码 |
+
+```bash
+base64 -i app/signing/itellytv-release.keystore | gh secret set KEYSTORE_BASE64
+gh secret set KEYSTORE_PASSWORD
+gh secret set KEY_ALIAS_PASSWORD
 ```
 
 ### Build 要求
@@ -180,20 +224,23 @@ source .env.sh                              # JDK 17 + writable Gradle/SDK homes
 
 ## 已知问题 / 路线图
 
-| 优先级 | 任务 | 状态 |
+| 状态 | 任务 | 版本 |
 |---|---|---|
 | ✅ | 自动播第一个频道 | 1.0.0 |
 | ✅ | 上下键切台 | 1.0.0 |
 | ✅ | 左侧抽屉 + 自动隐藏 | 1.0.0 |
 | ✅ | 数字键跳台 | 1.0.0 |
-| ✅ | 重连退避 | 1.0.0 |
+| ✅ | 重连退避（1s/2s/4s，上限 3 次） | 1.0.0 |
 | ✅ | 错误连续失败保护 | 1.0.0 |
 | ✅ | Android 15 edge-to-edge | 1.0.0 |
-| 🔲 | MediaSession 系统媒体控制（锁屏控制） | 下次 |
-| 🔲 | ForegroundService 显式 start | 下次 |
-| 🔲 | EPG 节目单 | P3 |
-| 🔲 | 媒体库（本地视频） | P3 |
-| 🔲 | ProGuard / R8 minify | 发布前 |
+| ✅ | 签名 release APK（CI 从 secrets 读 keystore） | 1.1.0 |
+| ✅ | ProGuard / R8 minify（11 MB → 4.2 MB） | 1.1.0 |
+| ✅ | MediaSession + 前台服务 | 1.1.0 |
+| 🔲 | 把 ExoPlayer 完整迁移进 PlaybackService（当前 service 是占位） | P2 |
+| 🔲 | EPG 节目单（XMLTV） | P3 |
+| 🔲 | 媒体库（本地视频 / USB / SMB） | P3 |
+| 🔲 | 多播放列表切换 UI | P3 |
+| 🔲 | Leanback → Compose for TV 迁移 | P4 |
 
 ## 许可证
 
