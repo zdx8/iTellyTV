@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -27,17 +29,45 @@ android {
         applicationId = "com.example.itellytv"
         minSdk = 23          // Android 6.0 (Marshmallow)
         targetSdk = 35       // Android 15 (Vanilla Ice Cream)
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
+    }
+
+    // Read release-signing credentials from keystore.properties (which
+    // is .gitignored). If the file is missing we still build — the
+    // release APK will just be unsigned (CI reads the keystore and
+    // passwords from repository secrets instead).
+    signingConfigs {
+        create("release") {
+            val keystoreProps = Properties().apply {
+                val f = rootProject.file("keystore.properties")
+                if (f.exists()) f.inputStream().use { load(it) }
+            }
+            if (keystoreProps.isNotEmpty()) {
+                storeFile = file(keystoreProps.getProperty("storeFile", "../signing/itellytv-release.keystore"))
+                storePassword = keystoreProps.getProperty("storePassword", "")
+                keyAlias = keystoreProps.getProperty("keyAlias", "itellytv-release")
+                keyPassword = keystoreProps.getProperty("keyPassword", "")
+            }
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Enable R8 minification + resource shrinking for the
+            // release build. Cuts the APK from ~11 MB to ~3-4 MB
+            // and obfuscates the code. The rules in
+            // proguard-rules.pro keep all the reflection-heavy
+            // Media3 / Room / kotlinx.serialization entry points.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (signingConfigs.findByName("release")?.storeFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -53,6 +83,11 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    // Note: ANDROID_USER_HOME is honoured by the Android Gradle Plugin
+    // automatically when set in the environment. This is just a hint
+    // for IDE users — there's no Gradle-level override here.
+    // The CI workflow and the .env.sh.example both set the env var.
 
     buildFeatures {
         viewBinding = true

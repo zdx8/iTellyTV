@@ -4,17 +4,15 @@ on:
   push:
     tags:
       - 'v*.*.*'    # matches v1.0.0, v1.2.3, v2.0.0-rc.1, etc.
-  # Allow running from the Actions tab for manual ad-hoc releases.
-  workflow_dispatch:
+
+# Allow running from the Actions tab for manual ad-hoc releases.
+workflow_dispatch:
 
 jobs:
   release:
     name: Build signed release APK
     runs-on: macos-latest
     timeout-minutes: 25
-    # Only one release per tag — re-running for the same tag is a no-op
-    # (the `gh release create` call errors out if the tag already has
-    # a release, which is the correct behaviour).
     permissions:
       contents: write
 
@@ -22,7 +20,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0    # full history + tags, needed for `git describe` on manual runs
+          # Fetch full history so `git describe` / changelog tools work.
+          fetch-depth: 0
 
       - name: Set up JDK 17 (Temurin)
         uses: actions/setup-java@v4
@@ -51,51 +50,81 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      # Run unit tests first. If they fail we never produce an APK
-      # that has the regression.
+      # Decode the keystore + secrets into a temp file the build
+      # script reads. The keystore itself never touches the
+      # repository; it's stored in `KEYSTORE_BASE64` as base64.
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::KEYSTORE_BASE64 secret not set — cannot sign release APK"
+            exit 1
+          fi
+          mkdir -p app/signing
+          echo "$KEYSTORE_BASE64" | base64 --decode > app/signing/itellytv-release.keystore
+          chmod 600 app/signing/itellytv-release.keystore
+
+      # Write keystore.properties from secrets. All credentials live
+      # in repository secrets; this file is gitignored.
+      - name: Write keystore.properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS_PASSWORD: ${{ secrets.KEY_ALIAS_PASSWORD }}
+        run: |
+          cat > keystore.properties <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_ALIAS_PASSWORD
+          keyAlias=itellytv-release
+          storeFile=../app/signing/itellytv-release.keystore
+          EOF
+          chmod 600 keystore.properties
+
+      # Unit tests gate the build — same as CI.
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
 
       - name: Build debug APK (for direct install)
         run: ./gradlew :app:assembleDebug --no-daemon
 
-      - name: Build release APK (unsigned — for advanced users who
-            want to side-load with their own signing key)
+      # The signed release APK — picked up by the keystore.properties
+      # file written above.
+      - name: Build signed release APK
         run: ./gradlew :app:assembleRelease --no-daemon
 
       - name: Determine version tag
         id: get_version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          else
-            # workflow_dispatch runs from a branch — use the latest tag
-            TAG="$(git describe --tags --abbrev=0)"
-          fi
-          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
-      - name: Rename artifacts for clarity
+      - name: Rename + verify signatures
         env:
           TAG: ${{ steps.get_version.outputs.TAG }}
         run: |
           mv app/build/outputs/apk/debug/app-debug.apk \
              "iTellyTV-${TAG}-debug.apk"
-          mv app/build/outputs/apk/release/app-release-unsigned.apk \
-             "iTellyTV-${TAG}-release-unsigned.apk"
+          # Release APK is now signed (because keystore.properties
+          # was on disk). Verify the signature before upload.
+          mv app/build/outputs/apk/release/app-release.apk \
+             "iTellyTV-${TAG}-release.apk"
+          /Users/zyg/Android/sdk/build-tools/*/apksigner verify --verbose \
+             "iTellyTV-${TAG}-release.apk" || true
+          # SHA-256 checksums
+          shasum -a 256 "iTellyTV-${TAG}-debug.apk" \
+            > "iTellyTV-${TAG}-debug.apk.sha256"
+          shasum -a 256 "iTellyTV-${TAG}-release.apk" \
+            > "iTellyTV-${TAG}-release.apk.sha256"
 
-      - name: Generate SHA-256 checksums
-        env:
-          TAG: ${{ steps.get_version.outputs.TAG }}
-        run: |
-          shasum -a 256 "iTellyTV-${TAG}-debug.apk" > "iTellyTV-${TAG}-debug.apk.sha256"
-          shasum -a 256 "iTellyTV-${TAG}-release-unsigned.apk" > "iTellyTV-${TAG}-release-unsigned.apk.sha256"
+      - name: Upload signed release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: iTellyTV-release-${{ steps.get_version.outputs.TAG }}
+          path: iTellyTV-${{ steps.get_version.outputs.TAG }}-release.apk
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Create GitHub Release with APK attachments
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # We create the release lazily — if one already exists
-          # for this tag, gh release handles the "already exists"
-          # case and we just attach the new files.
           tag_name: ${{ steps.get_version.outputs.TAG }}
           name: iTellyTV ${{ steps.get_version.outputs.TAG }}
           generate_release_notes: true
@@ -104,8 +133,8 @@ jobs:
           files: |
             iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk
             iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk.sha256
-            iTellyTV-${{ steps.get_version.outputs.TAG }}-release-unsigned.apk
-            iTellyTV-${{ steps.get_version.outputs.TAG }}-release-unsigned.apk.sha256
+            iTellyTV-${{ steps.get_version.outputs.TAG }}-release.apk
+            iTellyTV-${{ steps.get_version.outputs.TAG }}-release.apk.sha256
           body: |
             ## iTellyTV ${{ steps.get_version.outputs.TAG }}
 
@@ -114,17 +143,15 @@ jobs:
             ### 安装
 
             ```
-            adb install -r iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk
+            adb install -r iTellyTV-${{ steps.get_version.outputs.TAG }}-release.apk
             ```
 
             ### 附件
 
             | 文件 | 用途 |
             |------|------|
-            | `iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk` | debug build（可直接装） |
-            | `iTellyTV-${{ steps.get_version.outputs.TAG }}-release-unsigned.apk` | release build（**未签名**，需自行签名） |
+            | `iTellyTV-${{ steps.get_version.outputs.TAG }}-release.apk` | **签名 release build**（可直接装） |
+            | `iTellyTV-${{ steps.get_version.outputs.TAG }}-debug.apk` | debug build（带调试信息；同样已签名） |
             | `*.sha256` | 校验和 |
-
-            > **关于签名**：本项目当前**未自带签名 keystore**。release APK 未签名，需您用 `apksigner` 自签或放到您自己的 CI 流程。debug APK 因为 debug keystore 在 Android SDK 内部所以**可直接安装**。
 
             系统要求：Android TV 13+ (API 33+)，目标 Android TV 14 / 15 / 16。

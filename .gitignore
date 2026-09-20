@@ -30,7 +30,16 @@ err.log
 # Fake SDK with build-tools / platform-34 + build-tools 35
 fake-sdk/
 app/release/
+# Release keystore + credentials — must NEVER be committed.
+# Use the `keystore.properties.example` file as a template and copy
+# it to `keystore.properties` on your local machine.
+app/signing/*.keystore
+app/signing/*.jks
+keystore.properties
+# Generated APK artifacts — uploaded by CI as release assets.
 *.apk
 !docs/**/*.apk
 # keep sample assets staged under assets/ but ignore generated cache
 app/build/
+# IDE tool caches
+.workbuddy/

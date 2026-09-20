@@ -81,6 +81,25 @@
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
             android:theme="@style/Theme.iTellyTV.Playback" />
 
+        <!--
+            MediaSessionService — exposes the player to the system
+            so the OS can show lock-screen / Quick Settings / TV media
+            notifications and the remote's play/pause/seek keys keep
+            working when the activity is in the background.
+
+            android:foregroundServiceType="mediaPlayback" is
+            required on Android 14+ (compileSdk 34+) — without it
+            startForeground() throws ForegroundServiceTypeException.
+        -->
+        <service
+            android:name=".player.PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
+
     </application>
 
 </manifest>
