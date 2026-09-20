@@ -1,4 +1,4 @@
-name: Release
+name: Release v2
 
 # Tag pushes only (any push to a v*.*.* tag). The CI workflow
 # runs on regular branch pushes; this one runs only on a tag.
