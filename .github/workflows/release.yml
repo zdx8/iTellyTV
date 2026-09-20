@@ -1,9 +1,11 @@
 name: Release
 
+# Tag pushes only (any push to a v*.*.* tag). The CI workflow
+# runs on regular branch pushes; this one runs only on a tag.
 on:
   push:
     tags:
-      - 'v*.*.*'    # matches v1.0.0, v1.2.3, v2.0.0-rc.1, etc.
+      - 'v*.*.*'
 
 # Allow running from the Actions tab for manual ad-hoc releases.
 workflow_dispatch:
